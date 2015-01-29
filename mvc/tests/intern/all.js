@@ -1,0 +1,3 @@
+define([
+	"./observe"
+], 1);

@@ -2,8 +2,9 @@ define([
 	"dojo/_base/lang",
 	"dojo/_base/config",
 	"dojo/_base/array",
-	"dojo/has"
-], function(lang, config, array, has){
+	"dojo/has",
+	"./observe"
+], function(lang, config, array, has, observe){
 	var mvc = lang.getObject("dojox.mvc", true);
 	/*=====
 	mvc = {};
@@ -75,6 +76,33 @@ define([
 		 || (lang.isFunction((dst || {}).equals) ? dst.equals(src) : lang.isFunction((src || {}).equals) ? src.equals(dst) : false);
 	}
 
+	function getPathComps(path, create) {
+		return path === "" ? [] : !lang.isFunction(path.splice) ? path.split(".") : create ? path.slice() : path;
+	}
+
+	function getObjectPath(/*Object*/ o, /*String*/ path){
+		// Summary:
+		//		Similar to lang.setObject(path, false, o), but uses dojo/Stateful.get() whereever possible.
+
+		for (var comps = getPathComps(path), i = 0, l = comps.length; i < l; ++i) {
+			var comp = comps[i];
+			o = o == null ? o : lang.isFunction(o.get) ? o.get(comp) : o[comp];
+		}
+		return o;
+	}
+
+	function setObjectPath(/*Object*/ o, /*String*/ path, /*Anything*/ value){
+		// Summary:
+		//		Similar to lang.setObject(path, value, o), but uses dojo/Stateful.set() whereever possible.
+
+		var comps = getPathComps(path, true),
+			prop = comps.pop();
+		o = comps.length > 0 ? getObjectPath(o, comps) : o;
+		return !lang.isObject(o) || !path ? undefined : // Bail if the target is not an object
+			lang.isFunction(o.set) ? o.set(prop, value) :
+			(o[prop] = value);
+	}
+
 	function copy(/*Function*/ convertFunc, /*Object?*/ constraints, /*Function*/ equals, /*dojo/Stateful*/ source, /*String*/ sourceProp, /*dojo/Stateful*/ target, /*String*/ targetProp, /*Anything*/ old, /*Anything*/ current, /*Object?*/ excludes){
 		// summary:
 		//		Watch for change in property in dojo/Stateful object.
@@ -129,7 +157,7 @@ define([
 		}
 
 		// Copy the new value to source
-		lang.isFunction(source.set) ? source.set(prop, current) : (source[prop] = current);
+		setObjectPath(source, prop, current);
 	}
 
 	var directions = {
@@ -197,9 +225,15 @@ define([
 		if(bindDirection & mvc.from){
 			// Start synchronization from source to target (e.g. from model to widget). For wildcard mode (sourceProp == targetProp == "*"), the 1st argument of watch() is omitted
 			if(lang.isFunction(source.set) && lang.isFunction(source.watch)){
-				_watchHandles.push(source.watch.apply(source, ((sourceProp != "*") ? [sourceProp] : []).concat([function(name, old, current){
-					copy(formatFunc, constraints, equals, target, targetProp, source, name, old, current, excludes);
-				}])));
+				if(sourceProp == "*"){
+					_watchHandles.push(source.watch(function(name, old, current){
+						copy(formatFunc, constraints, equals, target, targetProp, source, name, old, current, excludes);
+					}));
+				}else{
+					_watchHandles.push(observe(source, sourceProp, function(current, old){
+						copy(formatFunc, constraints, equals, target, targetProp, source, sourceProp, old, current, excludes);
+					}));
+				}
 			}else if(has("mvc-bindings-log-api")){
 				console.log(logContent.reverse().join(" is not a stateful property. Its change is not reflected to ") + ".");
 			}
@@ -208,7 +242,7 @@ define([
 			array.forEach(list, function(prop){
 				// In "all properties synchronization" case, copy is not done for properties in "exclude" list
 				if(targetProp != "*" || !(prop in (excludes || {}))){
-					var value = lang.isFunction(source.get) ? source.get(prop) : source[prop];
+					var value = getObjectPath(source, prop);
 					copy(formatFunc, constraints, equals, target, targetProp == "*" ? prop : targetProp, source, prop, undef, value);
 				}
 			});
@@ -221,7 +255,7 @@ define([
 					// In "all properties synchronization" case, copy is not done for properties in "exclude" list
 					if(targetProp != "*" || !(prop in (excludes || {}))){
 						// Initial copy from target to source (e.g. from widget to model), only done for one-way binding from widget to model
-						var value = lang.isFunction(target.get) ? target.get(targetProp) : target[targetProp];
+						var value = getObjectPath(target, targetProp);
 						copy(parseFunc, constraints, equals, source, prop, target, targetProp == "*" ? prop : targetProp, undef, value);
 					}
 				});
@@ -229,9 +263,15 @@ define([
 
 			// Start synchronization from target to source (e.g. from widget to model). For wildcard mode (sourceProp == targetProp == "*"), the 1st argument of watch() is omitted
 			if(lang.isFunction(target.set) && lang.isFunction(target.watch)){
-				_watchHandles.push(target.watch.apply(target, ((targetProp != "*") ? [targetProp] : []).concat([function(name, old, current){
-					copy(parseFunc, constraints, equals, source, sourceProp, target, name, old, current, excludes);
-				}])));
+				if(targetProp == "*"){
+					_watchHandles.push(target.watch(function(name, old, current){
+						copy(parseFunc, constraints, equals, source, sourceProp, target, name, old, current, excludes);
+					}));
+				}else{
+					_watchHandles.push(observe(target, targetProp, function(current, old){
+						copy(parseFunc, constraints, equals, source, sourceProp, target, targetProp, old, current, excludes);
+					}));
+				}
 			}else if(has("mvc-bindings-log-api")){
 				console.log(logContent.join(" is not a stateful property. Its change is not reflected to ") + ".");
 			}
